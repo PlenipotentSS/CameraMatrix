@@ -482,6 +482,7 @@
 				D2F66BA719501B15003D5AC9 /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
 		};
 		D2F66BA819501B15003D5AC9 /* Build configuration list for PBXNativeTarget "CameraMatrixTests" */ = {
 			isa = XCConfigurationList;
@@ -490,6 +491,7 @@
 				D2F66BAA19501B15003D5AC9 /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
 		};
 /* End XCConfigurationList section */
 	};

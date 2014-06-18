@@ -13,13 +13,7 @@
 #import "SSBrightnessDetector.h"
 #import <AVFoundation/AVFoundation.h>
 
-#define NORMALIZE_MAX 25
-#define BRIGHTNESS_THRESHOLD 115
-#define MIN_BRIGHTNESS_THRESHOLD 95
-
-#define LOW_LIGHT_CONDITIONS_MAX 
-#define AVG_LIGHT_CONDITIONS_MAX
-#define HIGH_LIGHT_CONDITIONS_MAX
+#define TOTAL_REQUIRED_CALIBRATION_SHOTS 10
 
 @interface SSBrightnessDetector() <AVCaptureAudioDataOutputSampleBufferDelegate>
 
@@ -30,9 +24,28 @@
 @property (nonatomic) BOOL hasStarted;
 
 //the matrix of brightness RGB values in the given camera view
-@property (nonatomic) NSMutableArray *brightnessMatrix;
+//@property (nonatomic) NSMutableArray *brightnessMatrix;
 
 @property (nonatomic) int currentSpeed;
+
+
+@property (nonatomic) BOOL areViewsSetup;
+
+//first derivative values of light function
+@property (nonatomic) NSMutableArray *firstDegreeLightValues;
+
+//second derivative values of light function
+@property (nonatomic) NSMutableArray *secondDegreeLightValues;
+
+@property (nonatomic,strong) NSMutableArray *lastLightMatrix;
+
+@property (nonatomic) CGFloat averageAcceleration;
+
+@property (nonatomic) BOOL peakFlag;
+
+@property (nonatomic) BOOL isCalibrated;
+
+@property (nonatomic) NSInteger numberOfCalibratedShots;
 
 @end
 
@@ -44,7 +57,7 @@
     
     dispatch_once(&pred, ^{
         shared = [[SSBrightnessDetector alloc] init];
-        if (!shared.brightnessMatrix) {
+        if (!shared.captureSession) {
             [shared setup];
         }
     });
@@ -63,7 +76,7 @@
     NSError *error = nil;
     
     AVCaptureDevice *captureDevice = [self getBackCamera];
-//    [self configureCameraForHighestFrameRate:captureDevice];
+    [self configureCameraForHighestFrameRate:captureDevice];
     if ([captureDevice isExposureModeSupported:AVCaptureExposureModeLocked]) {
         [captureDevice lockForConfiguration:nil];
         [captureDevice setExposureMode:AVCaptureExposureModeLocked];
@@ -114,6 +127,8 @@
 {
     if(!self.hasStarted){
         [self.captureSession startRunning];
+        self.isCalibrated = NO;
+        self.numberOfCalibratedShots = 0;
         self.hasStarted = YES;
     }
     return self.hasStarted;
@@ -146,6 +161,19 @@
     return nil;
 }
 
+- (AVCaptureDevice *)getFrontCamera
+{
+    NSArray *videoDevices = [AVCaptureDevice devicesWithMediaType:AVMediaTypeVideo];
+    for (AVCaptureDevice *device in videoDevices)
+    {
+        if (device.position == AVCaptureDevicePositionFront)
+        {
+            return device;
+        }
+    }
+    return nil;
+}
+
 -(void)shouldUseSlowerSpeed:(BOOL)slowerSpeed
 {
     if (slowerSpeed) {
@@ -164,7 +192,7 @@ didOutputSampleBuffer:(CMSampleBufferRef)sampleBuffer
     if (CVPixelBufferLockBaseAddress(imageBuffer, 0) == kCVReturnSuccess)
     {
         
-        self.brightnessMatrix = [[NSMutableArray alloc] init];
+        NSMutableArray *brightnessMatrix = [[[NSMutableArray alloc] init] autorelease];
         UInt8 *base = (UInt8 *)CVPixelBufferGetBaseAddress(imageBuffer);
         
         //  calculate average brightness in a simple way
@@ -176,7 +204,7 @@ didOutputSampleBuffer:(CMSampleBufferRef)sampleBuffer
         int counter_row=0;
         BOOL firstRun = NO;
         
-        if ([self.brightnessMatrix count] == 0) {
+        if ([brightnessMatrix count] == 0) {
             firstRun = YES;
         }
         
@@ -184,7 +212,7 @@ didOutputSampleBuffer:(CMSampleBufferRef)sampleBuffer
             
             //get last brightness at row if possible
             NSMutableArray *row;
-            row = [NSMutableArray new];
+            row = [[NSMutableArray new] autorelease];
             
             //cycle through columns at row
             int counter_column = 0;
@@ -192,17 +220,125 @@ didOutputSampleBuffer:(CMSampleBufferRef)sampleBuffer
                 Float32 thisBrightness = (.299*p[0] + .587*p[1] + .116*p[2]);
                 [row addObject:@(thisBrightness)];
             }
-            [self.brightnessMatrix insertObject:row atIndex:counter_row];
+            [brightnessMatrix insertObject:row atIndex:counter_row];
             //put row values intro matrix
-        }
-        if (self.delegate) {
-            [[NSOperationQueue mainQueue] addOperationWithBlock:^{
-                [self.delegate newDetectedMatrix:self.brightnessMatrix];
-            }];
         }
         
         CVPixelBufferUnlockBaseAddress(imageBuffer, 0);
-        usleep(self.currentSpeed);
+        
+        if (self.delegate) {
+            [[NSOperationQueue mainQueue] addOperationWithBlock:^{
+                [self.delegate newDetectedMatrix:brightnessMatrix];
+            }];
+            brightnessMatrix = nil;
+            [brightnessMatrix release];
+            usleep(self.currentSpeed);
+        } else {
+            [self newDetectedMatrix:brightnessMatrix];
+        }
+    }
+}
+
+- (void)newDetectedMatrix:(NSMutableArray *)lightMatrix
+{
+    if ( !self.areViewsSetup ) {
+//        [self setupBase:lightMatrix];
+        self.areViewsSetup = YES;
+    }
+    
+    
+    CGFloat totalAccelerationChange = 0;
+    NSInteger totalIncreasedValues = 0;
+    if (self.lastLightMatrix) {
+        for (NSInteger i = 0; i<[lightMatrix count]; i++) {
+            
+            NSMutableArray *row = [lightMatrix objectAtIndex:i];
+            for (NSInteger j = 0; j<[row count]; j++) {
+                
+                CGFloat thisBrightness = [[row objectAtIndex:j] floatValue];
+                    
+                NSNumber *lastBrightNumber = [[self.lastLightMatrix objectAtIndex:i] objectAtIndex:j];
+                CGFloat lastBrightness = [lastBrightNumber floatValue];
+
+                CGFloat brightnessChange = (thisBrightness-lastBrightness); //d(x) = f(x+1)-f(x)
+                
+                NSNumber *oldBrightChangeNumber = [[self.firstDegreeLightValues objectAtIndex:i] objectAtIndex:j];
+                CGFloat oldBrightnessChange = [oldBrightChangeNumber floatValue];
+                
+                [[self.firstDegreeLightValues objectAtIndex:i] replaceObjectAtIndex:j withObject:@(brightnessChange)];
+                
+                CGFloat brightnessAcceleration = brightnessChange-oldBrightnessChange; //d(x+1)-d(x)
+                
+                //increased the number of changed pixels
+                totalIncreasedValues = (brightnessAcceleration > 0 && brightnessChange > 0) ? totalIncreasedValues+1 : totalIncreasedValues;
+                
+                [[self.secondDegreeLightValues objectAtIndex:i] replaceObjectAtIndex:j withObject:@(brightnessAcceleration)];
+                
+                totalAccelerationChange += brightnessChange;
+            }
+            
+        }
+        
+    }
+    
+    CGFloat thisAvgAcc = totalAccelerationChange/totalIncreasedValues;
+    
+    if (self.isCalibrated) {
+        NSLog(@"%f",thisAvgAcc);
+        
+        if (self.averageAcceleration - thisAvgAcc > 2  && self.peakFlag) {
+            
+            [[NSNotificationCenter defaultCenter] postNotificationName:@"OnReceiveLightDetected" object:nil];
+
+            self.peakFlag = NO;
+        } else if ( fabs(self.averageAcceleration - thisAvgAcc) < 1 && thisAvgAcc < 0) {
+            
+            self.peakFlag = NO;
+        } else {
+            
+            self.peakFlag = YES;
+        }
+        
+        if (self.lastLightMatrix) {
+            self.lastLightMatrix = nil;
+            [self.lastLightMatrix release];
+        }
+        self.averageAcceleration = thisAvgAcc;
+    } else {
+        if (thisAvgAcc < 1 && thisAvgAcc > -1 ){
+            self.numberOfCalibratedShots++;
+        } else {
+            self.numberOfCalibratedShots = 0;
+        }
+        if (self.numberOfCalibratedShots > TOTAL_REQUIRED_CALIBRATION_SHOTS) {
+            self.isCalibrated = YES;
+            
+            NSLog(@"calibrated!");
+        }
+    }
+    self.lastLightMatrix = lightMatrix;
+}
+
+- (void)setupBase:(NSMutableArray*)lightMatrix
+{
+    NSLog(@"setting up arrays...");
+    self.firstDegreeLightValues = [[[NSMutableArray alloc] init] autorelease];
+    self.secondDegreeLightValues = [[[NSMutableArray alloc] init] autorelease];
+    for (NSInteger i = 0; i<[lightMatrix count]; i++) {
+        if ([self.firstDegreeLightValues count] == i ) {
+            [self.firstDegreeLightValues addObject:[[NSMutableArray new] autorelease]];
+            [self.secondDegreeLightValues addObject:[[NSMutableArray new] autorelease]];
+        }
+        
+        NSMutableArray *row = [[lightMatrix objectAtIndex:i] autorelease];
+        
+        for (NSInteger j = 0; j<[row count]; j++) {
+            
+            [[self.firstDegreeLightValues objectAtIndex:i] addObject:@(0)];
+            [[self.secondDegreeLightValues objectAtIndex:i] addObject:@(0)];
+        }
+        [self.firstDegreeLightValues objectAtIndex:i];
+        [self.secondDegreeLightValues objectAtIndex:i];
     }
 }
 

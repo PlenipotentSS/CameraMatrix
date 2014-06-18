@@ -21,7 +21,7 @@
 //second derivative values of light function
 @property (nonatomic) NSMutableArray *secondDegreeLightValues;
 
-@property (nonatomic,weak) NSMutableArray *lastLightMatrix;
+@property (nonatomic,strong) NSMutableArray *lastLightMatrix;
 
 @property (nonatomic) CGFloat averageAcceleration;
 
@@ -42,11 +42,13 @@
     [super viewDidLoad];
 	// Do any additional setup after loading the view, typically from a nib.
     
-    [[SSBrightnessDetector sharedManager] setDelegate:self];
+    [SSBrightnessDetector sharedManager];
     
     [self.imageSwitch addTarget:self action:@selector(changedImageShown:) forControlEvents:UIControlEventValueChanged];
     
     self.processQueue = [NSOperationQueue new];
+    
+    [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(receiveLightDetected:) name:@"OnReceiveLightDetected" object:nil];
 }
 - (IBAction)startCapture:(id)sender {
     NSLog(@"starting Capture...");
@@ -67,14 +69,32 @@
 - (void)changedImageShown:(UISwitch*)theSwitch
 {
     [[SSBrightnessDetector sharedManager] shouldUseSlowerSpeed:theSwitch.on];
+    if (theSwitch.on) {
+        [[SSBrightnessDetector sharedManager] setDelegate:self];
+    } else {
+        [[SSBrightnessDetector sharedManager] setDelegate:nil];
+    }
 }
 
+- (void)receiveLightDetected:(id)sender
+{
+    NSLog(@"--------------------> light detected!");
+}
+
+- (void)didReceiveMemoryWarning
+{
+    [super didReceiveMemoryWarning];
+    // Dispose of any resources that can be recreated.
+}
+
+#pragma mark - SSBrightnessDetectorDelegate
 - (void)newDetectedMatrix:(NSMutableArray *)lightMatrix
 {
-    if ( !self.areViewsSetup) {
+    if ( !self.areViewsSetup ) {
         [self setupViews:lightMatrix];
         self.areViewsSetup = YES;
     }
+    NSInteger totalIncreasedValues = 0;
     CGFloat totalAccelerationChange = 0;
     for (NSInteger i = 0; i<[lightMatrix count]; i++) {
         
@@ -90,7 +110,8 @@
                 CGFloat oldBrightnessChange = [[[self.firstDegreeLightValues objectAtIndex:i] objectAtIndex:j] floatValue];
                 [[self.firstDegreeLightValues objectAtIndex:i] replaceObjectAtIndex:j withObject:@(brightnessChange)];
                 
-               CGFloat brightnessAcceleration = brightnessChange-oldBrightnessChange;
+                CGFloat brightnessAcceleration = brightnessChange-oldBrightnessChange;
+                totalIncreasedValues = (brightnessAcceleration > 0 && brightnessChange > 0) ? totalIncreasedValues+1 : totalIncreasedValues;
                 
                 [[self.secondDegreeLightValues objectAtIndex:i] replaceObjectAtIndex:j withObject:@(brightnessAcceleration)];
                 totalAccelerationChange += brightnessChange;
@@ -104,13 +125,14 @@
         }
         
     }
-    NSLog(@"%f",self.averageAcceleration);
-    NSInteger totalValues = [self.secondDegreeLightValues count] * [[self.secondDegreeLightValues objectAtIndex:0] count];
+//    NSLog(@"avg: %f with total: %ld",self.averageAcceleration, totalIncreasedValues);
+//    NSInteger totalIncreasedValues = [self.secondDegreeLightValues count] * [[self.secondDegreeLightValues objectAtIndex:0] count];
 
-    self.averageAcceleration = totalAccelerationChange/totalValues;
-    if (self.averageAcceleration < 0 && self.peakFlag) {
+    self.averageAcceleration = totalAccelerationChange/totalIncreasedValues;
+    if (self.averageAcceleration < 1 && self.peakFlag) {
         //hit a peak - possible light detected
         self.brightnessLabel.text = [NSString stringWithFormat:@"light detected!"];
+//        [self receiveLightDetected:self];
         
         self.peakFlag = NO;
     } else if (self.averageAcceleration < 1) {
@@ -159,10 +181,5 @@
     }
 }
 
-- (void)didReceiveMemoryWarning
-{
-    [super didReceiveMemoryWarning];
-    // Dispose of any resources that can be recreated.
-}
 
 @end
