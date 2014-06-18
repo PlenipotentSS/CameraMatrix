@@ -25,6 +25,14 @@
 
 @property (nonatomic) CGFloat averageAcceleration;
 
+@property (weak, nonatomic) IBOutlet UILabel *brightnessLabel;
+
+@property (weak, nonatomic) IBOutlet UISwitch *imageSwitch;
+
+@property (nonatomic) BOOL peakFlag;
+
+@property (nonatomic) NSOperationQueue *processQueue;
+
 @end
 
 @implementation SSViewController
@@ -36,12 +44,18 @@
     
     [[SSBrightnessDetector sharedManager] setDelegate:self];
     
+    [self.imageSwitch addTarget:self action:@selector(changedImageShown:) forControlEvents:UIControlEventValueChanged];
+    
+    self.processQueue = [NSOperationQueue new];
 }
 - (IBAction)startCapture:(id)sender {
+    NSLog(@"starting Capture...");
     [[SSBrightnessDetector sharedManager] start];
 }
 
 - (IBAction)stopCapture:(id)sender {
+    NSLog(@"stopping Capture...");
+    [self.processQueue cancelAllOperations];
     [[SSBrightnessDetector sharedManager] stop];
 }
 
@@ -50,15 +64,18 @@
     [super viewDidAppear:animated];
 }
 
+- (void)changedImageShown:(UISwitch*)theSwitch
+{
+    [[SSBrightnessDetector sharedManager] shouldUseSlowerSpeed:theSwitch.on];
+}
+
 - (void)newDetectedMatrix:(NSMutableArray *)lightMatrix
 {
-    NSLog(@"starting loading");
-    
     if ( !self.areViewsSetup) {
         [self setupViews:lightMatrix];
         self.areViewsSetup = YES;
     }
-    
+    CGFloat totalAccelerationChange = 0;
     for (NSInteger i = 0; i<[lightMatrix count]; i++) {
         
         NSMutableArray *row = [lightMatrix objectAtIndex:i];
@@ -73,18 +90,39 @@
                 CGFloat oldBrightnessChange = [[[self.firstDegreeLightValues objectAtIndex:i] objectAtIndex:j] floatValue];
                 [[self.firstDegreeLightValues objectAtIndex:i] replaceObjectAtIndex:j withObject:@(brightnessChange)];
                 
-                CGFloat brightnessAcceleration = brightnessChange-oldBrightnessChange;
-                [[self.secondDegreeLightValues objectAtIndex:i] replaceObjectAtIndex:j withObject:@(brightnessAcceleration)];
+               CGFloat brightnessAcceleration = brightnessChange-oldBrightnessChange;
                 
-                UIView *thisSector = [viewRow objectAtIndex:j];
-                [thisSector setBackgroundColor:[UIColor colorWithWhite:brightnessAcceleration alpha:1.f]];
+                [[self.secondDegreeLightValues objectAtIndex:i] replaceObjectAtIndex:j withObject:@(brightnessAcceleration)];
+                totalAccelerationChange += brightnessChange;
+                
+                if (self.imageSwitch.on) {
+                    UIView *thisSector = [viewRow objectAtIndex:j];
+                    [thisSector setBackgroundColor:[UIColor colorWithWhite:brightnessAcceleration alpha:1.f]];
+                }
             }
 
         }
         
     }
+    NSLog(@"%f",self.averageAcceleration);
+    NSInteger totalValues = [self.secondDegreeLightValues count] * [[self.secondDegreeLightValues objectAtIndex:0] count];
+
+    self.averageAcceleration = totalAccelerationChange/totalValues;
+    if (self.averageAcceleration < 0 && self.peakFlag) {
+        //hit a peak - possible light detected
+        self.brightnessLabel.text = [NSString stringWithFormat:@"light detected!"];
+        
+        self.peakFlag = NO;
+    } else if (self.averageAcceleration < 1) {
+        //just normal
+        self.brightnessLabel.text = [NSString stringWithFormat:@""];
+        
+        self.peakFlag = NO;
+    } else {
+        self.peakFlag = YES;
+    }
+
     self.lastLightMatrix = lightMatrix;
-    NSLog(@"done loading!");
 }
 
 - (void)setupViews:(NSMutableArray*)lightMatrix
@@ -102,7 +140,7 @@
         }
         
         CGFloat viewHeight = CGRectGetWidth(self.view.frame)/[lightMatrix count];
-        CGFloat yPos = 50;
+        CGFloat yPos = 100;
         NSMutableArray *row = [lightMatrix objectAtIndex:i];
         
         CGFloat viewWidth = CGRectGetWidth(self.view.frame)/[row count];
@@ -111,7 +149,7 @@
         for (NSInteger j = 0; j<[row count]; j++) {
             UIView *thisSector = [[UIView alloc] initWithFrame:CGRectMake(xPos, yPos, viewWidth, viewHeight)];
             [self.view addSubview:thisSector];
-            
+                
             [[self.viewArray objectAtIndex:i] addObject:thisSector];
             [[self.firstDegreeLightValues objectAtIndex:i] addObject:@(0)];
             [[self.secondDegreeLightValues objectAtIndex:i] addObject:@(0)];

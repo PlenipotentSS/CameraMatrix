@@ -28,4 +28,6 @@
 -(BOOL)stop;
 -(BOOL)isReceiving;
 
+-(void)shouldUseSlowerSpeed:(BOOL)slowerSpeed;
+
 @end

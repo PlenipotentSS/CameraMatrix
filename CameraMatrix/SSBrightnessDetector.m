@@ -32,6 +32,8 @@
 //the matrix of brightness RGB values in the given camera view
 @property (nonatomic) NSMutableArray *brightnessMatrix;
 
+@property (nonatomic) int currentSpeed;
+
 @end
 
 @implementation SSBrightnessDetector
@@ -144,6 +146,15 @@
     return nil;
 }
 
+-(void)shouldUseSlowerSpeed:(BOOL)slowerSpeed
+{
+    if (slowerSpeed) {
+        self.currentSpeed = 500000;
+    } else {
+        self.currentSpeed = 10000;
+    }
+}
+
 #pragma mark - AVCaptureAudioDataOutputSampleBuffer getBrightness and send Notification (hybridized)
 - (void)captureOutput:(AVCaptureOutput *)captureOutput
 didOutputSampleBuffer:(CMSampleBufferRef)sampleBuffer
@@ -186,12 +197,12 @@ didOutputSampleBuffer:(CMSampleBufferRef)sampleBuffer
         }
         if (self.delegate) {
             [[NSOperationQueue mainQueue] addOperationWithBlock:^{
-                NSLog(@"loaded brightneww mastrix");
                 [self.delegate newDetectedMatrix:self.brightnessMatrix];
             }];
         }
+        
         CVPixelBufferUnlockBaseAddress(imageBuffer, 0);
-        usleep(500000);
+        usleep(self.currentSpeed);
     }
 }
 
